@@ -98,39 +98,47 @@ impl SecurityKeyManager {
         eprintln!("✓ Found {} security key(s)", device_infos.len());
         eprintln!("👆 Please touch your security key when it blinks...");
 
-        // Extract HidParam from HidInfo structures
-        let device_params: Vec<HidParam> = device_infos.iter().map(|info| info.param.clone()).collect();
-        let cfg = LibCfg::init();
-        let device = FidoKeyHid::new(
-            &device_params,
-            &cfg,
-        )
-        .context("Failed to open security key device")?;
-
         // Create relying party information
         let rpid = "bandit";
         let challenge = self.challenge.clone();
 
-        // Attempt to get assertion (authentication)
-        // Note: This is a simplified implementation
-        // In production, you would need proper credential management
-        eprintln!("⏳ Waiting for user presence...");
+        // Try each device until one succeeds
+        let cfg = LibCfg::init();
+        let mut last_error = None;
 
-        // Try to perform a simple transaction to get cryptographic material
-        // We'll use the get_info command as a baseline
-        let info_result = device
-            .get_info()
-            .context("Failed to communicate with security key")?;
+        for device_info in &device_infos {
+            match FidoKeyHid::new(&[device_info.param.clone()], &cfg) {
+                Ok(device) => {
+                    eprintln!("⏳ Waiting for user presence...");
 
-        eprintln!("✓ Security key responded successfully");
+                    // Try to perform a simple transaction to get cryptographic material
+                    // We'll use the get_info command as a baseline
+                    match device.get_info() {
+                        Ok(info_result) => {
+                            eprintln!("✓ Security key responded successfully");
 
-        // Create a deterministic response based on the challenge and device info
-        let mut hasher = Sha256::new();
-        hasher.update(&challenge);
-        hasher.update(format!("{:?}", info_result).as_bytes());
-        hasher.update(rpid.as_bytes());
+                            // Create a deterministic response based on the challenge and device info
+                            let mut hasher = Sha256::new();
+                            hasher.update(&challenge);
+                            hasher.update(format!("{:?}", info_result).as_bytes());
+                            hasher.update(rpid.as_bytes());
 
-        Ok(hasher.finalize().to_vec())
+                            return Ok(hasher.finalize().to_vec());
+                        }
+                        Err(e) => {
+                            last_error = Some(anyhow!("Device communication failed: {}", e));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(anyhow!("Failed to open device: {}", e));
+                    continue;
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("Failed to communicate with security key")))
     }
 
     /// Software-based fallback authentication

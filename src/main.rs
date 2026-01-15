@@ -72,13 +72,9 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Use security key for additional authentication
+        /// Use password-only authentication (no security key)
         #[arg(short, long)]
-        security_key: bool,
-
-    /// Use only the security key (no password)
-    #[arg(long)]
-    security_key_only: bool,
+        password: bool,
 
         /// Use AES-GCM instead of ChaCha20-Poly1305
         #[arg(long)]
@@ -95,13 +91,9 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// Use security key for additional authentication
+        /// Use password-only authentication (no security key)
         #[arg(short, long)]
-        security_key: bool,
-
-        /// Use only the security key (no password)
-        #[arg(long)]
-        security_key_only: bool,
+        password: bool,
     },
 
     /// Generate and display new key pair information
@@ -115,17 +107,15 @@ fn main() -> Result<()> {
         Commands::Encrypt {
             input,
             output,
-            security_key,
-            security_key_only,
+            password,
             use_aes,
-        } => handle_encrypt(input, output, security_key, security_key_only, use_aes),
+        } => handle_encrypt(input, output, password, use_aes),
 
         Commands::Decrypt {
             input,
             output,
-            security_key,
-            security_key_only,
-        } => handle_decrypt(input, output, security_key, security_key_only),
+            password,
+        } => handle_decrypt(input, output, password),
 
         Commands::Info => handle_info(),
     }
@@ -139,28 +129,19 @@ fn main() -> Result<()> {
 fn handle_encrypt(
     input: Option<PathBuf>,
     output: Option<PathBuf>,
-    use_security_key_flag: bool,
-    security_key_only: bool,
+    password_only: bool,
     use_aes: bool,
 ) -> Result<()> {
     eprintln!("🔐 Bandit Encryption System");
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let use_security_key = use_security_key_flag || security_key_only;
+    let use_security_key = !password_only;
 
     // Read input data
     let plaintext = read_input(input.as_ref())?;
     eprintln!("✓ Read {} bytes of input data", plaintext.len());
 
-    // Get password
-    let mut password = if security_key_only {
-        eprintln!("🔑 Using security key only (no password)");
-        String::new()
-    } else {
-        prompt_password("Enter encryption password: ")?
-    };
-
-    // Get security key data if requested
+    // Get security key data first (default behavior)
     let mut security_key_data: Option<Vec<u8>> = None;
     if use_security_key {
         eprintln!("\n🔑 Security key authentication required");
@@ -168,6 +149,16 @@ fn handle_encrypt(
         security_key_data = Some(key_manager.authenticate()?);
         eprintln!("✓ Security key authenticated successfully");
     }
+
+    // Get password (optional if using security key)
+    let mut password = if password_only {
+        prompt_password("Enter encryption password: ")?
+    } else {
+        match prompt_password("Enter encryption password (optional, press Enter to skip): ") {
+            Ok(pwd) if !pwd.is_empty() => pwd,
+            _ => String::new(),
+        }
+    };
 
     // Configure cryptographic settings
     let config = CryptoConfig {
@@ -206,27 +197,18 @@ fn handle_encrypt(
 fn handle_decrypt(
     input: Option<PathBuf>,
     output: Option<PathBuf>,
-    use_security_key_flag: bool,
-    security_key_only: bool,
+    password_only: bool,
 ) -> Result<()> {
     eprintln!("🔓 Bandit Decryption System");
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let use_security_key = use_security_key_flag || security_key_only;
+    let use_security_key = !password_only;
 
     // Read encrypted data
     let ciphertext = read_input(input.as_ref())?;
     eprintln!("✓ Read {} bytes of encrypted data", ciphertext.len());
 
-    // Get password
-    let mut password = if security_key_only {
-        eprintln!("🔑 Using security key only (no password)");
-        String::new()
-    } else {
-        prompt_password("Enter decryption password: ")?
-    };
-
-    // Get security key data if requested
+    // Get security key data first (default behavior)
     let mut security_key_data: Option<Vec<u8>> = None;
     if use_security_key {
         eprintln!("\n🔑 Security key authentication required");
@@ -234,6 +216,16 @@ fn handle_decrypt(
         security_key_data = Some(key_manager.authenticate()?);
         eprintln!("✓ Security key authenticated successfully");
     }
+
+    // Get password (optional if using security key)
+    let mut password = if password_only {
+        prompt_password("Enter decryption password: ")?
+    } else {
+        match prompt_password("Enter decryption password (optional, press Enter to skip): ") {
+            Ok(pwd) if !pwd.is_empty() => pwd,
+            _ => String::new(),
+        }
+    };
 
     // Perform decryption
     eprintln!("\n🔓 Decrypting data with PQXDH...");
