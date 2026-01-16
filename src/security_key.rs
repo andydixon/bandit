@@ -96,7 +96,39 @@ impl SecurityKeyManager {
             return Err(anyhow!("No FIDO2 security keys detected"));
         }
 
-        eprintln!("✓ Found {} device(s), filtering for physical/software keys...", device_infos.len());
+        let total_devices = device_infos.len();
+
+        // Filter by known FIDO device characteristics before trying to open them
+        // This prevents hanging on non-FIDO HID devices
+        let fido_devices: Vec<_> = device_infos.into_iter()
+            .filter(|info| {
+                // Only consider devices that look like FIDO authenticators
+                // FIDO devices typically have specific vendor IDs or product strings
+                let product_lower = info.product_string.to_lowercase();
+                let is_likely_fido = product_lower.contains("fido")
+                    || product_lower.contains("security key")
+                    || product_lower.contains("yubikey")
+                    || product_lower.contains("authenticator")
+                    || product_lower.contains("u2f")
+                    || product_lower.contains("ctap")
+                    // Known FIDO vendors
+                    || info.vid == 0x1050  // Yubico
+                    || info.vid == 0x2ccf  // Solo
+                    || info.vid == 0x096e  // Feitian
+                    || info.vid == 0x10c4  // Canokey
+                    || info.vid == 0x311f  // Google Titan
+                    || info.vid == 0x20a0; // Nitrokey
+                
+                is_likely_fido
+            })
+            .collect();
+
+        if fido_devices.is_empty() {
+            eprintln!("⚠ Found {} HID device(s) but none appear to be FIDO security keys", total_devices);
+            return Err(anyhow!("No FIDO2 security keys detected"));
+        }
+
+        eprintln!("✓ Found {} potential FIDO device(s) out of {} total HID devices", fido_devices.len(), total_devices);
 
         // Create relying party information
         let rpid = "bandit";
@@ -107,7 +139,10 @@ impl SecurityKeyManager {
         let mut last_error = None;
         let mut filtered_count = 0;
 
-        for device_info in &device_infos {
+        for device_info in &fido_devices {
+            eprintln!("  Checking: {} (VID:{:04x} PID:{:04x})", 
+                device_info.product_string, device_info.vid, device_info.pid);
+            
             match FidoKeyHid::new(&[device_info.param.clone()], &cfg) {
                 Ok(device) => {
                     // First, check if this is a platform authenticator we should skip
