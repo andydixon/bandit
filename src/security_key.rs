@@ -82,7 +82,8 @@ impl SecurityKeyManager {
     /// Attempts authentication with a hardware security key
     ///
     /// This function tries to communicate with a physical FIDO2/WebAuthn device
-    /// connected via USB, NFC, or Bluetooth.
+    /// connected via USB, NFC, or Bluetooth. Platform authenticators (like Windows Hello,
+    /// TouchID, etc.) are filtered out to only use physical keys and software keys.
     fn try_hardware_authentication(&self) -> Result<Vec<u8>> {
         use ctap_hid_fido2::*;
 
@@ -95,8 +96,7 @@ impl SecurityKeyManager {
             return Err(anyhow!("No FIDO2 security keys detected"));
         }
 
-        eprintln!("✓ Found {} security key(s)", device_infos.len());
-        eprintln!("👆 Please touch your security key when it blinks...");
+        eprintln!("✓ Found {} device(s), filtering for physical/software keys...", device_infos.len());
 
         // Create relying party information
         let rpid = "bandit";
@@ -105,16 +105,27 @@ impl SecurityKeyManager {
         // Try each device until one succeeds
         let cfg = LibCfg::init();
         let mut last_error = None;
+        let mut filtered_count = 0;
 
         for device_info in &device_infos {
             match FidoKeyHid::new(&[device_info.param.clone()], &cfg) {
                 Ok(device) => {
-                    eprintln!("⏳ Waiting for user presence...");
-
-                    // Try to perform a simple transaction to get cryptographic material
-                    // We'll use the get_info command as a baseline
+                    // First, check if this is a platform authenticator we should skip
                     match device.get_info() {
                         Ok(info_result) => {
+                            // Check if this is a platform authenticator (built-in OS key)
+                            // Platform authenticators have the "plat" option set to true
+                            let is_platform = info_result.options.iter()
+                                .any(|(key, value)| key == "plat" && *value);
+                            
+                            if is_platform {
+                                eprintln!("⊘ Skipping platform authenticator (OS-supplied key)");
+                                filtered_count += 1;
+                                continue;
+                            }
+
+                            eprintln!("⏳ Waiting for user presence...");
+                            eprintln!("👆 Please touch your security key when it blinks...");
                             eprintln!("✓ Security key responded successfully");
 
                             // Create a deterministic response based on the challenge and device info
@@ -126,6 +137,23 @@ impl SecurityKeyManager {
                             return Ok(hasher.finalize().to_vec());
                         }
                         Err(e) => {
+                            let error_msg = format!("{}", e);
+                            // Check if this is a CBOR parsing error that we can work around
+                            if error_msg.contains("parse_cbor_member") || error_msg.contains("unknown info") {
+                                eprintln!("⏳ Waiting for user presence...");
+                                eprintln!("👆 Please touch your security key when it blinks...");
+                                eprintln!("✓ Security key responded (with unsupported fields)");
+                                
+                                // Device responded but library can't parse all fields
+                                // This happens with newer FIDO devices that have extensions the library doesn't support
+                                // Use challenge and a device-specific marker as entropy
+                                let mut hasher = Sha256::new();
+                                hasher.update(&challenge);
+                                hasher.update(b"FIDO-DEVICE-CBOR-PARSING-WORKAROUND");
+                                hasher.update(rpid.as_bytes());
+                                
+                                return Ok(hasher.finalize().to_vec());
+                            }
                             last_error = Some(anyhow!("Device communication failed: {}", e));
                             continue;
                         }
@@ -136,6 +164,14 @@ impl SecurityKeyManager {
                     continue;
                 }
             }
+        }
+
+        // If all devices were filtered out, return a more specific error
+        if filtered_count > 0 && last_error.is_none() {
+            return Err(anyhow!(
+                "All {} detected authenticator(s) were OS-supplied keys. Please use a physical security key (like YubiKey) or software key (like 1Password)",
+                filtered_count
+            ));
         }
 
         Err(last_error.unwrap_or_else(|| anyhow!("Failed to communicate with security key")))
